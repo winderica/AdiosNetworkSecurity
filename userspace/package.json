@@ -1,0 +1,71 @@
+{
+  "name": "firewall",
+  "version": "1.0.0",
+  "main": "src/electron/main.js",
+  "homepage": "./",
+  "license": "MIT",
+  "dependencies": {
+    "@material-ui/core": "^4.11.0",
+    "@material-ui/icons": "^4.9.1",
+    "@reach/router": "^1.3.4",
+    "material-table": "^1.69.1",
+    "mobx": "^6.0.1",
+    "mobx-react": "^7.0.0",
+    "node-addon-api": "^3.0.2",
+    "notistack": "^1.0.1",
+    "react": "^17.0.1",
+    "react-dom": "^17.0.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.10.5",
+    "@babel/plugin-proposal-decorators": "^7.10.5",
+    "babel-loader": "^8.1.0",
+    "babel-preset-react-app": "^10.0.0",
+    "concurrently": "^5.3.0",
+    "electron": "^10.1.3",
+    "electron-builder": "^22.9.1",
+    "html-webpack-plugin": "^5.0.0-alpha.7",
+    "terser-webpack-plugin": "^5.0.3",
+    "wait-on": "^5.2.0",
+    "webpack": "^5.3.1",
+    "webpack-cli": "^4.1.0",
+    "webpack-dev-server": "^3.11.0"
+  },
+  "scripts": {
+    "start:react": "NODE_ENV=development webpack serve --config config/webpack.dev.js",
+    "start:electron": "NODE_ENV=development electron .",
+    "start": "yarn build:cpp:debug && concurrently \"yarn start:react\" \"wait-on http://127.0.0.1:3000 && yarn start:electron\"",
+    "build:react": "NODE_ENV=production webpack --config config/webpack.prod.js",
+    "build:electron": "electron-builder",
+    "build:cpp:debug": "cmake --build ./src/cpp/build/Debug -- -j 8",
+    "build:cpp:release": "cmake --build ./src/cpp/build/Release -- -j 8",
+    "build": "yarn build:cpp:release && yarn build:react && yarn build:electron"
+  },
+  "engines": {
+    "node": ">= 14.12.0"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "build": {
+    "appId": "fire.wall",
+    "files": [
+      "./src/**/*",
+      "./build/**/*"
+    ],
+    "linux": {
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}
