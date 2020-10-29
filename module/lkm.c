@@ -245,7 +245,11 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = tcp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                tcp_hdr(b)->source = findNATEntry(ip, port) || addNATEntry(ip, port);
+                uint32_t newPort = findNATEntry(ip, port);
+                if (!newPort) {
+                    newPort = addNATEntry(ip, port);
+                }
+                tcp_hdr(b)->source = newPort;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -254,7 +258,11 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = udp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                udp_hdr(b)->source = findNATEntry(ip, port) || addNATEntry(ip, port);
+                uint32_t newPort = findNATEntry(ip, port);
+                if (!newPort) {
+                    newPort = addNATEntry(ip, port);
+                }
+                udp_hdr(b)->source = newPort;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
