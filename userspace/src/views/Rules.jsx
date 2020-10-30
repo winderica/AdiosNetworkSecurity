@@ -3,7 +3,8 @@ import { api } from '../api';
 import { Table } from '../components/Table';
 import { action, computed, makeObservable, observable, toJS } from 'mobx';
 import { observer } from 'mobx-react';
-import { ArrowDownward, ArrowUpward, Save } from '@material-ui/icons';
+import { ArrowDownward, ArrowUpward, Publish, GetApp, Save } from '@material-ui/icons';
+import * as idb from 'idb-keyval';
 
 const CIDR_REGEX = /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([0-9]|[1-2][0-9]|3[0-2]))?$/;
 
@@ -108,6 +109,12 @@ export const Rules = observer(() => {
     const handleSubmit = () => {
         api.sendRules(toJS(rulesStore.rules));
     }
+    const handleSave = async () => {
+        await idb.set('rules', toJS(rulesStore.rules));
+    }
+    const handleLoad = async () => {
+        rulesStore.setRules(await idb.get('rules'));
+    }
     return (
         <Table
             title='Rules'
@@ -134,6 +141,18 @@ export const Rules = observer(() => {
                     tooltip: 'Submit',
                     isFreeAction: true,
                     onClick: handleSubmit
+                },
+                {
+                    icon: () => <Publish />,
+                    tooltip: 'Save',
+                    isFreeAction: true,
+                    onClick: handleSave
+                },
+                 {
+                    icon: () => <GetApp />,
+                    tooltip: 'Load',
+                    isFreeAction: true,
+                    onClick: handleLoad
                 },
                 {
                     icon: () => <ArrowUpward />,
