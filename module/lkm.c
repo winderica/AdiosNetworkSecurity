@@ -8,14 +8,15 @@
 uint32_t NETLINK_USER = 31;
 uint32_t LAN_IP = 0x02A8C0; // 192.168.2.0
 uint32_t LAN_MASK = 0xFFFFFF; // 255.255.255.0
+bool REJECT_BY_DEFAULT = true;
 
 typedef struct {
-    uint32_t src_ip;
-    uint32_t src_mask;
-    uint32_t dst_ip;
-    uint32_t dst_mask;
-    uint16_t src_port;
-    uint16_t dst_port;
+    uint32_t srcIP;
+    uint32_t srcMask;
+    uint32_t dstIP;
+    uint32_t dstMask;
+    uint16_t srcPort;
+    uint16_t dstPort;
     uint8_t protocol;
     uint8_t action;
     uint8_t log;
@@ -23,23 +24,23 @@ typedef struct {
     uint32_t end;
 } Rule;
 typedef struct {
-    uint32_t src_ip;
-    uint32_t dst_ip;
-    uint16_t src_port;
-    uint16_t dst_port;
+    uint32_t srcIP;
+    uint32_t dstIP;
+    uint16_t srcPort;
+    uint16_t dstPort;
     uint8_t protocol;
     uint64_t expire;
 } __attribute__((packed)) Connection;
 typedef struct {
-    uint32_t lan_ip;
-    uint16_t lan_port;
-    uint16_t wan_port;
+    uint32_t lanIP;
+    uint16_t lanPort;
+    uint16_t wanPort;
 } NATEntry;
 typedef struct {
-    uint32_t src_ip;
-    uint32_t dst_ip;
-    uint16_t src_port;
-    uint16_t dst_port;
+    uint32_t srcIP;
+    uint32_t dstIP;
+    uint16_t srcPort;
+    uint16_t dstPort;
     uint8_t protocol;
     uint8_t action;
     uint64_t timestamp;
@@ -55,10 +56,20 @@ cvector_vector_type(NATEntry)activeNATEntries = NULL;
 uint16_t natPort = 10000;
 struct sock *netlinkSocket = NULL;
 
+/**
+ * @brief determine if the given ip is in LAN
+ * @param ip
+ * @return
+ */
 inline uint8_t isLAN(uint32_t ip) {
     return (ip & LAN_MASK) == LAN_IP;
 }
 
+/**
+ * @brief get IP of network device/interface
+ * @param dev
+ * @return
+ */
 inline uint32_t deviceIP(const struct net_device *dev) {
     if (!dev || !dev->ip_ptr || !dev->ip_ptr->ifa_list) {
         return 0;
@@ -66,6 +77,10 @@ inline uint32_t deviceIP(const struct net_device *dev) {
     return dev->ip_ptr->ifa_list->ifa_local;
 }
 
+/**
+ * @brief update checksum of IP header and TCP/UDP header
+ * @param b socket buffer, all variables of `struct sk_buff *` type will be called `b` in the following code
+ */
 inline void updateChecksum(struct sk_buff *b) {
     uint32_t len = b->len - 4 * ip_hdr(b)->ihl;
     ip_hdr(b)->check = 0;
@@ -84,14 +99,34 @@ inline void updateChecksum(struct sk_buff *b) {
     }
 }
 
+/**
+ * @brief hash function of connections, used by hashmap
+ * @param item
+ * @param seed0
+ * @param seed1
+ * @return
+ */
 uint64_t hashConnection(const void *item, uint64_t seed0, uint64_t seed1) {
     return hashmap_sip(item, sizeof(Connection) - sizeof(uint64_t), seed0, seed1);
 }
 
+/**
+ * @brief comparator of connections, used by hashmap
+ * @param a
+ * @param b
+ * @param data
+ * @return
+ */
 int compareConnection(const void *a, const void *b, void *data) {
     return memcmp(a, b, sizeof(Connection) - sizeof(uint64_t));
 }
 
+/**
+ * copy connections from hashmap to active connections vector
+ * @param item
+ * @param data
+ * @return
+ */
 bool filterConnection(const void *item, void *data) {
     const Connection *connection = item;
     if (ktime_get_real_seconds() < connection->expire) {
@@ -100,40 +135,76 @@ bool filterConnection(const void *item, void *data) {
     return true;
 }
 
+/**
+ * @brief hash function of NAT entries, used by hashmap
+ * @param item
+ * @param seed0
+ * @param seed1
+ * @return
+ */
 uint64_t hashNATEntry(const void *item, uint64_t seed0, uint64_t seed1) {
     return hashmap_sip(item, sizeof(uint32_t) + sizeof(uint16_t), seed0, seed1);
 }
 
+/**
+ * @brief comparator of NAT entries, used by hashmap
+ * @param a
+ * @param b
+ * @param data
+ * @return
+ */
 int compareNATEntry(const void *a, const void *b, void *data) {
     return memcmp(a, b, sizeof(uint32_t) + sizeof(uint16_t));
 }
 
+/**
+ * @brief add NAT entry to WAN NAT table and LAN NAT hashmap
+ * @param ip
+ * @param port
+ * @return
+ */
 uint16_t addNATEntry(uint32_t ip, uint16_t port) {
     uint16_t wanPort = natPort++;
     if (natPort == 0) {
         natPort = 10000;
     }
-    wanNATEntries[wanPort].lan_ip = ip;
-    wanNATEntries[wanPort].lan_port = port;
-    wanNATEntries[wanPort].wan_port = wanPort;
+    wanNATEntries[wanPort].lanIP = ip;
+    wanNATEntries[wanPort].lanPort = port;
+    wanNATEntries[wanPort].wanPort = wanPort;
     hashmap_set(lanNATEntries, &wanNATEntries[wanPort]);
     return wanPort;
 }
 
+/**
+ * @brief copy NAT entries from hashmap to active NAT entries vector
+ * @param item
+ * @param data
+ * @return
+ */
 bool filterNATEntry(const void *item, void *data) {
     const NATEntry *natEntry = item;
     cvector_push_back(activeNATEntries, *natEntry);
     return true;
 }
 
+/**
+ * @brief find the corresponding rule in the rules table
+ * @param srcIP
+ * @param dstIP
+ * @param srcPort
+ * @param dstPort
+ * @param protocol
+ * @param timeOfDay
+ * @return pointer to the rule or NULL
+ */
 inline Rule *
-findRule(uint32_t src_ip, uint32_t dst_ip, uint16_t src_port, uint16_t dst_port, uint8_t protocol, uint32_t timeOfDay) {
+findRule(uint32_t srcIP, uint32_t dstIP, uint16_t srcPort, uint16_t dstPort, uint8_t protocol, uint32_t timeOfDay) {
     for (Rule *rule = cvector_begin(rules); rule != cvector_end(rules); ++rule) {
         if (
-            (src_ip & rule->src_mask) == (rule->src_ip & rule->src_mask)
-            && (dst_ip & rule->dst_mask) == (rule->dst_ip & rule->dst_mask)
-            && (!rule->src_port || src_port == rule->src_port)
-            && (!rule->dst_port || dst_port == rule->dst_port)
+            (srcIP & rule->srcMask) == (rule->srcIP & rule->srcMask)
+            && (dstIP & rule->dstMask) == (rule->dstIP & rule->dstMask)
+            && (!rule->srcPort || srcPort == rule->srcPort)
+            && (!rule->dstPort || dstPort == rule->dstPort)
             && (!rule->protocol || protocol == rule->protocol)
             && (
                 rule->start > rule->end
@@ -147,23 +218,30 @@ findRule(uint32_t src_ip, uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
     return NULL;
 }
 
+/**
+ * @brief filter, will be called on NF_INET_PRE_ROUTING and NF_INET_POST_ROUTING
+ * @param p never used
+ * @param b socket buffer, which will be checked by rules and connections to determine whether the firewall should drop it
+ * @param state never used
+ * @return NF_ACCEPT or NF_DROP according to rules
+ */
 uint32_t mainHook(void *p, struct sk_buff *b, const struct nf_hook_state *state) {
     if (!ip_hdr(b)) {
         return NF_ACCEPT;
     }
-    uint32_t src_ip = ip_hdr(b)->saddr;
-    uint32_t dst_ip = ip_hdr(b)->daddr;
+    uint32_t srcIP = ip_hdr(b)->saddr;
+    uint32_t dstIP = ip_hdr(b)->daddr;
     uint8_t protocol = ip_hdr(b)->protocol;
-    uint16_t src_port = 0;
-    uint16_t dst_port = 0;
+    uint16_t srcPort = 0;
+    uint16_t dstPort = 0;
     switch (protocol) {
         case IPPROTO_TCP:
-            src_port = tcp_hdr(b)->source;
-            dst_port = tcp_hdr(b)->dest;
+            srcPort = tcp_hdr(b)->source;
+            dstPort = tcp_hdr(b)->dest;
             break;
         case IPPROTO_UDP:
-            src_port = udp_hdr(b)->source;
-            dst_port = udp_hdr(b)->dest;
+            srcPort = udp_hdr(b)->source;
+            dstPort = udp_hdr(b)->dest;
             break;
         case IPPROTO_ICMP:
             break;
@@ -173,18 +251,18 @@ uint32_t mainHook(void *p, struct sk_buff *b, const struct nf_hook_state *state)
     uint64_t now = ktime_get_real_seconds();
     uint32_t timeOfDay = now % (24 * 60 * 60);
     Connection connection = {
-        .src_ip = src_ip,
-        .dst_ip = dst_ip,
-        .src_port = src_port,
-        .dst_port = dst_port,
+        .srcIP = srcIP,
+        .dstIP = dstIP,
+        .srcPort = srcPort,
+        .dstPort = dstPort,
         .protocol = protocol,
         .expire = now + (protocol == IPPROTO_TCP ? 5 : 1),
     };
     Connection reverseConnection = {
-        .src_ip = dst_ip,
-        .dst_ip = src_ip,
-        .src_port = dst_port,
-        .dst_port = src_port,
+        .srcIP = dstIP,
+        .dstIP = srcIP,
+        .srcPort = dstPort,
+        .dstPort = srcPort,
         .protocol = protocol,
         .expire = now + (protocol == IPPROTO_TCP ? 5 : 1),
     };
@@ -198,17 +276,17 @@ uint32_t mainHook(void *p, struct sk_buff *b, const struct nf_hook_state *state)
         reverseResult->expire = connection.expire;
         return NF_ACCEPT;
     }
-    Rule *rule = findRule(src_ip, dst_ip, src_port, dst_port, protocol, timeOfDay);
+    Rule *rule = findRule(srcIP, dstIP, srcPort, dstPort, protocol, timeOfDay);
     if (!rule) {
         hashmap_set(connections, &connection);
-        return NF_ACCEPT; // TODO: reject by default
+        return REJECT_BY_DEFAULT ? NF_DROP : NF_ACCEPT;
     }
     if (rule->log) {
         Log log = {
-            .src_ip = src_ip,
-            .dst_ip = dst_ip,
-            .src_port = src_port,
-            .dst_port = dst_port,
+            .srcIP = srcIP,
+            .dstIP = dstIP,
+            .srcPort = srcPort,
+            .dstPort = dstPort,
             .protocol = protocol,
             .action = rule->action,
             .timestamp = now
@@ -222,22 +300,29 @@ uint32_t mainHook(void *p, struct sk_buff *b, const struct nf_hook_state *state)
     return NF_DROP;
 }
 
+/**
+ * @brief DNAT, will be called on NF_INET_PRE_ROUTING
+ * @param p never used
+ * @param b socket buffer, whose destination ip and destination port may be changed
+ * @param state never used
+ * @return always NF_ACCEPT
+ */
 uint32_t inboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state *state) {
     if (!ip_hdr(b) || isLAN(ip_hdr(b)->saddr)) {
         return NF_ACCEPT;
     }
     switch (ip_hdr(b)->protocol) {
         case IPPROTO_TCP:
-            if (tcp_hdr(b) && wanNATEntries[tcp_hdr(b)->dest].lan_ip) {
-                ip_hdr(b)->daddr = wanNATEntries[tcp_hdr(b)->dest].lan_ip;
-                tcp_hdr(b)->dest = wanNATEntries[tcp_hdr(b)->dest].lan_port;
+            if (tcp_hdr(b) && wanNATEntries[tcp_hdr(b)->dest].lanIP) {
+                ip_hdr(b)->daddr = wanNATEntries[tcp_hdr(b)->dest].lanIP;
+                tcp_hdr(b)->dest = wanNATEntries[tcp_hdr(b)->dest].lanPort;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
         case IPPROTO_UDP:
-            if (udp_hdr(b) && wanNATEntries[udp_hdr(b)->dest].lan_ip) {
-                ip_hdr(b)->daddr = wanNATEntries[udp_hdr(b)->dest].lan_ip;
-                udp_hdr(b)->dest = wanNATEntries[udp_hdr(b)->dest].lan_port;
+            if (udp_hdr(b) && wanNATEntries[udp_hdr(b)->dest].lanIP) {
+                ip_hdr(b)->daddr = wanNATEntries[udp_hdr(b)->dest].lanIP;
+                udp_hdr(b)->dest = wanNATEntries[udp_hdr(b)->dest].lanPort;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -246,6 +331,13 @@ uint32_t inboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state *
     }
 }
 
+/**
+ * @brief SNAT, will be called on NF_INET_POST_ROUTING
+ * @param p never used
+ * @param b socket buffer, whose source ip and source port may be changed
+ * @param state never used
+ * @return always NF_ACCEPT
+ */
 uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state *state) {
     if (!ip_hdr(b) || !isLAN(ip_hdr(b)->saddr)) {
         return NF_ACCEPT;
@@ -256,8 +348,8 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = tcp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lan_ip = ip, .lan_port = port });
-                tcp_hdr(b)->source = res ? res->wan_port : addNATEntry(ip, port);
+                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lanIP = ip, .lanPort = port });
+                tcp_hdr(b)->source = res ? res->wanPort : addNATEntry(ip, port);
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -266,8 +358,8 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = udp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lan_ip = ip, .lan_port = port });
-                udp_hdr(b)->source = res ? res->wan_port : addNATEntry(ip, port);
+                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lanIP = ip, .lanPort = port });
+                udp_hdr(b)->source = res ? res->wanPort : addNATEntry(ip, port);
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -276,19 +368,29 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
     }
 }
 
+/**
+ * @brief send data to userspace via netlink
+ * @param pid the pid of userspace program
+ * @param message message to send
+ * @param len length of message
+ */
 static void netlinkSend(uint32_t pid, const void *message, size_t len) {
-    struct sk_buff *skb = nlmsg_new(len, GFP_KERNEL);
-    if (!skb) {
+    struct sk_buff *b = nlmsg_new(len, GFP_KERNEL);
+    if (!b) {
         printk("Failed to allocate sk_buff\n");
     }
-    struct nlmsghdr *nlh = nlmsg_put(skb, 0, 0, NLMSG_DONE, len, 0);
-    NETLINK_CB(skb).dst_group = 0;
+    struct nlmsghdr *nlh = nlmsg_put(b, 0, 0, NLMSG_DONE, len, 0);
+    NETLINK_CB(b).dst_group = 0;
     memcpy(nlmsg_data(nlh), message, len);
-    nlmsg_unicast(netlinkSocket, skb, pid);
+    nlmsg_unicast(netlinkSocket, b, pid);
 }
 
-static void netlinkReceive(struct sk_buff *skb) {
-    struct nlmsghdr *nlh = nlmsg_hdr(skb);
+/**
+ * @brief will be called when data is received from netlink
+ * @param b socket buffer, whose data's first byte is the action, and the following bytes are payload
+ */
+static void netlinkReceive(struct sk_buff *b) {
+    struct nlmsghdr *nlh = nlmsg_hdr(b);
     uint8_t *data = nlmsg_data(nlh);
     switch (*data) {
         case 0: // set rules
@@ -327,27 +429,31 @@ struct nf_hook_ops inputOps = {
     .hook = mainHook,
     .pf = PF_INET,
     .hooknum = NF_INET_PRE_ROUTING,
-    .priority = NF_IP_PRI_FILTER
+    .priority = NF_IP_PRI_FILTER // priority SHOULD be NF_IP_PRI_FILTER, which ensures that `mainHook` executes after `inboundNATHook`
 };
 struct nf_hook_ops outputOps = {
     .hook = mainHook,
     .pf = PF_INET,
     .hooknum = NF_INET_POST_ROUTING,
-    .priority = NF_IP_PRI_FILTER
+    .priority = NF_IP_PRI_FILTER // priority SHOULD be NF_IP_PRI_FILTER, which ensures that `mainHook` executes before `outboundNATHook`
 };
 struct nf_hook_ops inputNATOps = {
     .hook = inboundNATHook,
     .pf = PF_INET,
     .hooknum = NF_INET_PRE_ROUTING,
-    .priority = NF_IP_PRI_NAT_DST
+    .priority = NF_IP_PRI_NAT_DST // priority SHOULD be NF_IP_PRI_NAT_DST
 };
 struct nf_hook_ops outputNATOps = {
     .hook = outboundNATHook,
     .pf = PF_INET,
     .hooknum = NF_INET_POST_ROUTING,
-    .priority = NF_IP_PRI_NAT_SRC
+    .priority = NF_IP_PRI_NAT_SRC // priority SHOULD be NF_IP_PRI_NAT_SRC
 };
 
+/**
+ * @brief will be called when the module is initialized, some preparations are done here
+ * @return
+ */
 static int initCallback(void) {
     connections = hashmap_new(sizeof(Connection), 0, 0, 0, hashConnection, compareConnection, NULL);
     if (!connections) {
@@ -371,6 +477,10 @@ static int initCallback(void) {
     return 0;
 }
 
+/**
+ * @brief will be called when the module exits, some cleanups are done here
+ * @return
+ */
 static void exitCallback(void) {
     hashmap_free(connections);
     hashmap_free(lanNATEntries);
