@@ -113,7 +113,7 @@ export const Rules = observer(() => {
         await idb.set('rules', toJS(rulesStore.rules));
     }
     const handleLoad = async () => {
-        rulesStore.setRules(await idb.get('rules'));
+        rulesStore.setRules((await idb.get('rules')) || []);
     }
     return (
         <Table
