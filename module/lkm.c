@@ -313,26 +313,26 @@ static void netlinkReceive(struct sk_buff *skb) {
 struct nf_hook_ops inputOps = {
     .hook = mainHook,
     .pf = PF_INET,
-    .hooknum = NF_INET_LOCAL_IN,
+    .hooknum = NF_INET_PRE_ROUTING,
     .priority = NF_IP_PRI_FIRST
 };
 struct nf_hook_ops outputOps = {
     .hook = mainHook,
     .pf = PF_INET,
-    .hooknum = NF_INET_LOCAL_OUT,
+    .hooknum = NF_INET_POST_ROUTING,
     .priority = NF_IP_PRI_FIRST
 };
 struct nf_hook_ops inputNATOps = {
     .hook = inboundNATHook,
     .pf = PF_INET,
     .hooknum = NF_INET_PRE_ROUTING,
-    .priority = NF_IP_PRI_FIRST
+    .priority = NF_IP_PRI_NAT_DST
 };
 struct nf_hook_ops outputNATOps = {
     .hook = outboundNATHook,
     .pf = PF_INET,
     .hooknum = NF_INET_POST_ROUTING,
-    .priority = NF_IP_PRI_FIRST
+    .priority = NF_IP_PRI_NAT_SRC
 };
 
 static int initCallback(void) {
