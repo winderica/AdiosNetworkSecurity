@@ -180,9 +180,22 @@ uint32_t mainHook(void *p, struct sk_buff *b, const struct nf_hook_state *state)
         .protocol = protocol,
         .expire = now + (protocol == IPPROTO_TCP ? 5 : 1),
     };
+    Connection reverseConnection = {
+        .src_ip = dst_ip,
+        .dst_ip = src_ip,
+        .src_port = dst_port,
+        .dst_port = src_port,
+        .protocol = protocol,
+        .expire = now + (protocol == IPPROTO_TCP ? 5 : 1),
+    };
     Connection *result = hashmap_get(connections, &connection);
+    Connection *reverseResult = hashmap_get(connections, &reverseConnection);
     if (result && now < result->expire) {
         result->expire = connection.expire;
+        return NF_ACCEPT;
+    }
+    if (reverseResult && now < reverseResult->expire) {
+        reverseResult->expire = connection.expire;
         return NF_ACCEPT;
     }
     Rule *rule = findRule(src_ip, dst_ip, src_port, dst_port, protocol, timeOfDay);
