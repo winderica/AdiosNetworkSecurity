@@ -327,13 +327,13 @@ struct nf_hook_ops inputOps = {
     .hook = mainHook,
     .pf = PF_INET,
     .hooknum = NF_INET_PRE_ROUTING,
-    .priority = NF_IP_PRI_FIRST
+    .priority = NF_IP_PRI_FILTER
 };
 struct nf_hook_ops outputOps = {
     .hook = mainHook,
     .pf = PF_INET,
     .hooknum = NF_INET_POST_ROUTING,
-    .priority = NF_IP_PRI_FIRST
+    .priority = NF_IP_PRI_FILTER
 };
 struct nf_hook_ops inputNATOps = {
     .hook = inboundNATHook,
