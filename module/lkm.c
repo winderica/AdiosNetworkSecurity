@@ -49,7 +49,8 @@ cvector_vector_type(Rule)rules = NULL;
 struct hashmap *connections;
 cvector_vector_type(Connection)activeConnections = NULL;
 cvector_vector_type(Log)logs = NULL;
-static NATEntry natEntries[65536];
+static NATEntry wanNATEntries[65536];
+struct hashmap *lanNATEntries;
 cvector_vector_type(NATEntry)activeNATEntries = NULL;
 uint16_t natPort = 10000;
 struct sock *netlinkSocket = NULL;
@@ -99,33 +100,30 @@ bool filterConnection(const void *item, void *data) {
     return true;
 }
 
+uint64_t hashNATEntry(const void *item, uint64_t seed0, uint64_t seed1) {
+    return hashmap_sip(item, sizeof(uint32_t) + sizeof(uint16_t), seed0, seed1);
+}
+
+int compareNATEntry(const void *a, const void *b, void *data) {
+    return memcmp(a, b, sizeof(uint32_t) + sizeof(uint16_t));
+}
+
 uint16_t addNATEntry(uint32_t ip, uint16_t port) {
-    uint16_t newPort = natPort++;
+    uint16_t wanPort = natPort++;
     if (natPort == 0) {
         natPort = 10000;
     }
-    natEntries[newPort].lan_ip = ip;
-    natEntries[newPort].lan_port = port;
-    natEntries[newPort].wan_port = newPort;
-    return newPort;
+    wanNATEntries[wanPort].lan_ip = ip;
+    wanNATEntries[wanPort].lan_port = port;
+    wanNATEntries[wanPort].wan_port = wanPort;
+    hashmap_set(lanNATEntries, &wanNATEntries[wanPort]);
+    return wanPort;
 }
 
-uint16_t findNATEntry(uint32_t ip, uint16_t port) {
-    for (int i = 0; i < 65536; i++) {
-        if (natEntries[i].lan_ip == ip && natEntries[i].lan_port == port) {
-            return i;
-        }
-    }
-    return 0;
-}
-
-void filterNATEntries(void) {
-    cvector_set_size(activeNATEntries, 0);
-    for (int i = 0; i < 65536; i++) {
-        if (natEntries[i].lan_ip) {
-            cvector_push_back(activeNATEntries, natEntries[i]);
-        }
-    }
+bool filterNATEntry(const void *item, void *data) {
+    const NATEntry *natEntry = item;
+    cvector_push_back(activeNATEntries, *natEntry);
+    return true;
 }
 
 inline Rule *
@@ -217,16 +215,16 @@ uint32_t inboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state *
     }
     switch (ip_hdr(b)->protocol) {
         case IPPROTO_TCP:
-            if (tcp_hdr(b) && natEntries[tcp_hdr(b)->dest].lan_ip) {
-                ip_hdr(b)->daddr = natEntries[tcp_hdr(b)->dest].lan_ip;
-                tcp_hdr(b)->dest = natEntries[tcp_hdr(b)->dest].lan_port;
+            if (tcp_hdr(b) && wanNATEntries[tcp_hdr(b)->dest].lan_ip) {
+                ip_hdr(b)->daddr = wanNATEntries[tcp_hdr(b)->dest].lan_ip;
+                tcp_hdr(b)->dest = wanNATEntries[tcp_hdr(b)->dest].lan_port;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
         case IPPROTO_UDP:
-            if (udp_hdr(b) && natEntries[udp_hdr(b)->dest].lan_ip) {
-                ip_hdr(b)->daddr = natEntries[udp_hdr(b)->dest].lan_ip;
-                udp_hdr(b)->dest = natEntries[udp_hdr(b)->dest].lan_port;
+            if (udp_hdr(b) && wanNATEntries[udp_hdr(b)->dest].lan_ip) {
+                ip_hdr(b)->daddr = wanNATEntries[udp_hdr(b)->dest].lan_ip;
+                udp_hdr(b)->dest = wanNATEntries[udp_hdr(b)->dest].lan_port;
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -245,11 +243,8 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = tcp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                uint32_t newPort = findNATEntry(ip, port);
-                if (!newPort) {
-                    newPort = addNATEntry(ip, port);
-                }
-                tcp_hdr(b)->source = newPort;
+                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lan_ip = ip, .lan_port = port });
+                tcp_hdr(b)->source = res ? res->wan_port : addNATEntry(ip, port);
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -258,11 +253,8 @@ uint32_t outboundNATHook(void *p, struct sk_buff *b, const struct nf_hook_state 
                 uint32_t ip = ip_hdr(b)->saddr;
                 uint32_t port = udp_hdr(b)->source;
                 ip_hdr(b)->saddr = deviceIP(b->dev);
-                uint32_t newPort = findNATEntry(ip, port);
-                if (!newPort) {
-                    newPort = addNATEntry(ip, port);
-                }
-                udp_hdr(b)->source = newPort;
+                NATEntry* res = hashmap_get(lanNATEntries, &(NATEntry){ .lan_ip = ip, .lan_port = port });
+                udp_hdr(b)->source = res ? res->wan_port : addNATEntry(ip, port);
                 updateChecksum(b);
             }
             return NF_ACCEPT;
@@ -309,7 +301,8 @@ static void netlinkReceive(struct sk_buff *skb) {
             cvector_set_size(logs, 0);
             break;
         case 5: // get nat entries
-            filterNATEntries();
+            cvector_set_size(activeNATEntries, 0);
+            hashmap_scan(lanNATEntries, filterNATEntry, NULL);
             netlinkSend(nlh->nlmsg_pid, activeNATEntries, cvector_size(activeNATEntries) * sizeof(NATEntry));
             break;
         default:
@@ -347,6 +340,10 @@ static int initCallback(void) {
     if (!connections) {
         printk("Failed to create connections table\n");
     }
+    lanNATEntries = hashmap_new(sizeof(NATEntry), 0, 0, 0, hashNATEntry, compareNATEntry, NULL);
+    if (!lanNATEntries) {
+        printk("Failed to create reverse NAT entries table\n");
+    }
     nf_register_net_hook(&init_net, &inputOps);
     nf_register_net_hook(&init_net, &outputOps);
     nf_register_net_hook(&init_net, &inputNATOps);
@@ -363,6 +360,7 @@ static int initCallback(void) {
 
 static void exitCallback(void) {
     hashmap_free(connections);
+    hashmap_free(lanNATEntries);
     nf_unregister_net_hook(&init_net, &inputOps);
     nf_unregister_net_hook(&init_net, &outputOps);
     nf_unregister_net_hook(&init_net, &inputNATOps);
