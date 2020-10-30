@@ -4,7 +4,7 @@
 #include <arpa/inet.h>
 #include "types/types.h"
 
-uint32_t NETLINK_USER = 25;
+uint32_t NETLINK_USER = 31;
 
 std::string ipToString(uint32_t ip) {
     char res[INET_ADDRSTRLEN];

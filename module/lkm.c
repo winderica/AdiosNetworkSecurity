@@ -5,7 +5,7 @@
 #include "lib/hashmap.h"
 #include "lib/vector.h"
 
-uint32_t NETLINK_USER = 25;
+uint32_t NETLINK_USER = 31;
 uint32_t LAN_IP = 0x02A8C0; // 192.168.2.0
 uint32_t LAN_MASK = 0xFFFFFF; // 255.255.255.0
 
