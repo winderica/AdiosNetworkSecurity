@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Table } from '../components/Table';
-import { Clear, ClearAll, Refresh } from '@material-ui/icons';
+import { ClearAll, Refresh } from '@material-ui/icons';
 
 export const Logs = () => {
     const [logs, setLogs] = useState([]);
