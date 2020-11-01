@@ -458,10 +458,12 @@ static int initCallback(void) {
     connections = hashmap_new(sizeof(Connection), 0, 0, 0, hashConnection, compareConnection, NULL);
     if (!connections) {
         printk("Failed to create connections table\n");
+	return -1;
     }
     lanNATEntries = hashmap_new(sizeof(NATEntry), 0, 0, 0, hashNATEntry, compareNATEntry, NULL);
     if (!lanNATEntries) {
         printk("Failed to create reverse NAT entries table\n");
+	return -1;
     }
     nf_register_net_hook(&init_net, &inputOps);
     nf_register_net_hook(&init_net, &outputOps);
